@@ -33,6 +33,7 @@ For PME electrostatics:
 - A separate OpenMM `NonbondedForce` evaluates Coulomb interactions with PME.
 - Charges are scaled by `1 / sqrt(epsilon_r)` before they are added to the PME force. This gives the same Coulomb prefactor as using `q_i q_j / epsilon_r`.
 - Topology exclusions and pair exceptions are added to both the Lennard-Jones custom force and the PME force.
+- One-parent virtual-site exclusions inserted by the OpenMM topology conversion are also mirrored into the PME force as zero-charge-product exceptions.
 - Virtual-site particles are treated as ordinary topology particles for nonbonded parameters. If a virtual-site atom has a charge in the topology, that charge is added to the PME force and its topology exclusions are honored.
 
 ## Validation
