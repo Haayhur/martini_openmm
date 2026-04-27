@@ -20,6 +20,8 @@ All the test systems files are in the `tests` directory, which also includes exa
 
 To run the tests, use `pytest` in the root directory after installation.
 
+## Electrostatics
+The default electrostatics treatment is Martini reaction-field cutoff electrostatics. PME electrostatics can be requested with `MartiniTopFile.create_system(electrostatics_method="pme")`; see [docs/electrostatics.md](docs/electrostatics.md) for implementation details and validation results.
 
 ## Limitations
 - Martini 2 cholesterol. The standard Martini 2 cholesterol topology uses a constraint network that, while can be solved by LINCS in GROMACS, cannot be solved by the Constant Constraint Matrix Approximation (CCMA) algorithm in OpenMM, thus leading to instabilities.

@@ -189,6 +189,7 @@ class MartiniTopFile(object):
         self._nonbond_types = {}
         self._all_vsites = []
         self.nb_force = None
+        self.es_force = None
         self.es_self_excl_force = None
         self.es_except_force = None
         self.lj_except_force = None
@@ -266,7 +267,7 @@ class MartiniTopFile(object):
 
     def _process_file(self, file):
         append = ""
-        with open(file) as lines:
+        with open(file, encoding="utf-8") as lines:
             for line in lines:
                 if line.strip().endswith("\\"):
                     append = "%s %s" % (append, line[: line.rfind("\\")])
@@ -1131,8 +1132,12 @@ class MartiniTopFile(object):
             index = base_atom_index + i
             atomType = atom_type_map[params[0]]
             self.nb_force.addParticle([atomType, q])
-            # Add in the self term for the reaction field correction
-            self.es_self_excl_force.addBond(index, index, [0.5 * q * q])
+            if self.es_force is not None:
+                scaled_q = q / math.sqrt(self.epsilon_r)
+                self.es_force.addParticle(scaled_q, 1.0, 0.0)
+            # Add in the self term for the reaction field correction.
+            if self.es_self_excl_force is not None:
+                self.es_self_excl_force.addBond(index, index, [0.5 * q * q])
 
         pairExceptions = self._gen_pair_exceptions(
             molecule_type, base_atom_index, atom_types
@@ -1357,6 +1362,8 @@ class MartiniTopFile(object):
         self,
         nonbonded_cutoff=1.1 * unit.nanometer,
         remove_com_motion=True,
+        electrostatics_method="reaction-field",
+        ewald_error_tolerance=5e-4,
     ):
         """Construct an OpenMM System representing the topology described by this
         top file.
@@ -1367,6 +1374,11 @@ class MartiniTopFile(object):
             The cutoff distance to use for nonbonded interactions
         remove_com_motion : boolean=True
             If true, a CMMotionRemover will be added to the System
+        electrostatics_method : string="reaction-field"
+            The electrostatics treatment to use. Supported values are
+            "reaction-field" and "PME".
+        ewald_error_tolerance : float=5e-4
+            The target error tolerance to use when electrostatics_method is PME.
         Returns
         -------
         System
@@ -1379,9 +1391,23 @@ class MartiniTopFile(object):
         else:
             raise ValueError("periodicBoxVectors must be set")
 
+        electrostatics_method = electrostatics_method.lower().replace("_", "-")
+        if electrostatics_method in ("rf", "reactionfield"):
+            electrostatics_method = "reaction-field"
+        if electrostatics_method not in ("reaction-field", "pme"):
+            raise ValueError(
+                f"Unsupported electrostatics method: {electrostatics_method}"
+            )
+
         # Custom force to handle martini nonbonded terms
         # nbfix-like terms
-        self.nb_force = mm.CustomNonbondedForce(
+        lj_expression = (
+            "step(rcut-r)*(LJ - corr);"
+            "LJ = (C12(type1, type2) / r^12 - C6(type1, type2) / r^6);"
+            "corr = (C12(type1, type2) / rcut^12 - C6(type1, type2) / rcut^6);"
+            f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
+        )
+        rf_expression = (
             "step(rcut-r)*(LJ - corr + ES);"
             "LJ = (C12(type1, type2) / r^12 - C6(type1, type2) / r^6);"
             "corr = (C12(type1, type2) / rcut^12 - C6(type1, type2) / rcut^6);"
@@ -1392,38 +1418,52 @@ class MartiniTopFile(object):
             "f = 138.935458;"
             f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
         )
+        if electrostatics_method == "pme":
+            self.nb_force = mm.CustomNonbondedForce(lj_expression)
+        else:
+            self.nb_force = mm.CustomNonbondedForce(rf_expression)
         self.nb_force.addPerParticleParameter("type")
         self.nb_force.addPerParticleParameter("q")
         self.nb_force.setNonbondedMethod(mm.CustomNonbondedForce.CutoffPeriodic)
         self.nb_force.setCutoffDistance(nonbonded_cutoff.value_in_unit(unit.nanometer))
         sys.addForce(self.nb_force)
 
-        # custom non-bonded force to add in the electrostatic
-        # terms for self and excluded interactions
-        self.es_self_excl_force = mm.CustomBondForce(
-            f"step(rcut-r) * ES;"
-            f"ES = f*qprod/epsilon_r * (krf * r^2 - crf);"
-            f"crf = 1 / rcut + krf * rcut^2;"
-            f"krf = 1 / (2 * rcut^3);"
-            f"epsilon_r = {self.epsilon_r};"
-            f"f = 138.935458;"
-            f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
-        )
-        self.es_self_excl_force.addPerBondParameter("qprod")
-        sys.addForce(self.es_self_excl_force)
+        if electrostatics_method == "pme":
+            self.es_self_excl_force = None
+            self.es_except_force = None
+            self.es_force = mm.NonbondedForce()
+            self.es_force.setNonbondedMethod(mm.NonbondedForce.PME)
+            self.es_force.setCutoffDistance(nonbonded_cutoff)
+            self.es_force.setEwaldErrorTolerance(ewald_error_tolerance)
+            sys.addForce(self.es_force)
+        else:
+            self.es_force = None
+            # custom non-bonded force to add in the electrostatic
+            # terms for self and excluded interactions
+            self.es_self_excl_force = mm.CustomBondForce(
+                f"step(rcut-r) * ES;"
+                f"ES = f*qprod/epsilon_r * (krf * r^2 - crf);"
+                f"crf = 1 / rcut + krf * rcut^2;"
+                f"krf = 1 / (2 * rcut^3);"
+                f"epsilon_r = {self.epsilon_r};"
+                f"f = 138.935458;"
+                f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
+            )
+            self.es_self_excl_force.addPerBondParameter("qprod")
+            sys.addForce(self.es_self_excl_force)
 
-        # custom non-bonded force for the ES exceptions
-        self.es_except_force = mm.CustomBondForce(
-            f"step(rcut-r) * ES;"
-            f"ES = f*qprod/epsilon_r * (1/r + krf * r^2 - crf);"
-            f"crf = 1 / rcut + krf * rcut^2;"
-            f"krf = 1 / (2 * rcut^3);"
-            f"epsilon_r = {self.epsilon_r};"
-            f"f = 138.935458;"
-            f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
-        )
-        self.es_except_force.addPerBondParameter("qprod")
-        sys.addForce(self.es_except_force)
+            # custom non-bonded force for the ES exceptions
+            self.es_except_force = mm.CustomBondForce(
+                f"step(rcut-r) * ES;"
+                f"ES = f*qprod/epsilon_r * (1/r + krf * r^2 - crf);"
+                f"crf = 1 / rcut + krf * rcut^2;"
+                f"krf = 1 / (2 * rcut^3);"
+                f"epsilon_r = {self.epsilon_r};"
+                f"f = 138.935458;"
+                f"rcut={nonbonded_cutoff.value_in_unit(unit.nanometers)};"
+            )
+            self.es_except_force.addPerBondParameter("qprod")
+            sys.addForce(self.es_except_force)
 
         # custom bonded force to handle exceptions
         self.lj_except_force = mm.CustomBondForce(
@@ -1576,8 +1616,10 @@ class MartiniTopFile(object):
                 # In this for loop, we have not give the q, c6, c12 correspond to i and j.
                 q = float(except_map[(i, j)][0])
                 c6 = float(except_map[(i, j)][1])
-                c12 = float(except_map[(i, j)][0])
-                if q == 0:
+                c12 = float(except_map[(i, j)][2])
+                if self.es_force is not None:
+                    self.es_force.addException(i, j, q / self.epsilon_r, 1.0, 0.0)
+                elif q == 0:
                     # In this case, we still need to add in the reaction field correction
                     # term.
                     qprod = all_charges[i] * all_charges[j]
