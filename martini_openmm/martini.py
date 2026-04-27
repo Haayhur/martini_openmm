@@ -188,6 +188,8 @@ class MartiniTopFile(object):
         self._cmapTypes = {}
         self._nonbond_types = {}
         self._all_vsites = []
+        self._direct_nb_exclusions = []
+        self._nb_exclusion_pairs = set()
         self.nb_force = None
         self.es_force = None
         self.es_self_excl_force = None
@@ -1240,6 +1242,13 @@ class MartiniTopFile(object):
                 raise RuntimeError(f"Unknown site type {type(site)}.")
             self._all_vsites.append(index + offset)
 
+    def _add_nb_exclusion(self, i, j):
+        pair = tuple(sorted((i, j)))
+        if pair not in self._nb_exclusion_pairs:
+            self.nb_force.addExclusion(*pair)
+            self._nb_exclusion_pairs.add(pair)
+        return pair
+
     def _add_normalized_in_plane_two_particle_vsite(self, sys, index, site, offset):
         vsite = mm.LocalCoordinatesSite(
             site.atom1 + offset,
@@ -1310,7 +1319,9 @@ class MartiniTopFile(object):
         sys.setVirtualSite(index + offset, vsite)
 
         # Add exclusions
-        self.nb_force.addExclusion(index + offset, atoms[0])
+        i = index + offset
+        j = atoms[0]
+        self._direct_nb_exclusions.append(self._add_nb_exclusion(i, j))
 
     def _add_two_particle_vsite(self, sys, index, site, offset):
         atoms = []
@@ -1385,6 +1396,8 @@ class MartiniTopFile(object):
              the newly created System
         """
         sys = mm.System()
+        self._direct_nb_exclusions = []
+        self._nb_exclusion_pairs = set()
         box_vectors = self.topology.getPeriodicBoxVectors()
         if box_vectors is not None:
             sys.setDefaultPeriodicBoxVectors(*box_vectors)
@@ -1594,6 +1607,7 @@ class MartiniTopFile(object):
                         base_atom_index + atoms[0], base_atom_index + atoms[1], length
                     )
 
+        pme_exception_pairs = set()
         if all_exceptions:
             # build a map of unique exceptions
             # process in order, so that later entries trump earlier ones
@@ -1608,7 +1622,7 @@ class MartiniTopFile(object):
             # add in all of the exclusions
             for i, j in except_map:
                 # Remove i,j from nonbonded interactions for all exceptions / exclusions
-                self.nb_force.addExclusion(i, j)
+                self._add_nb_exclusion(i, j)
             
                 # Handle electrostatic exceptions / exclusions.
                 # We're going to assume that q==0 means that this was an
@@ -1619,6 +1633,7 @@ class MartiniTopFile(object):
                 c12 = float(except_map[(i, j)][2])
                 if self.es_force is not None:
                     self.es_force.addException(i, j, q / self.epsilon_r, 1.0, 0.0)
+                    pme_exception_pairs.add((i, j))
                 elif q == 0:
                     # In this case, we still need to add in the reaction field correction
                     # term.
@@ -1635,6 +1650,12 @@ class MartiniTopFile(object):
                 if c6 != 0 and c12 != 0:
                 # As in lj_except_force we first add the parameter C12 and then C6
                     self.lj_except_force.addBond(i, j, [c12, c6])
+
+        if self.es_force is not None:
+            for i, j in self._direct_nb_exclusions:
+                if (i, j) not in pme_exception_pairs:
+                    self.es_force.addException(i, j, 0.0, 1.0, 0.0)
+                    pme_exception_pairs.add((i, j))
 
         if remove_com_motion:
             sys.addForce(mm.CMMotionRemover())
