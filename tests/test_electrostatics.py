@@ -36,9 +36,37 @@ TST 1
 """
 
 
-def make_topology(tmpdir, epsilon_r=4.0):
+ONE_PARENT_VSITE_TOPOLOGY = """[ defaults ]
+1 1
+
+[ atomtypes ]
+; name mass charge ptype c6 c12
+D 24.0 0.000 A 0.0 0.0
+
+[ moleculetype ]
+; molname nrexcl
+VST 1
+
+[ atoms ]
+; nr type resnr residue atom cgnr charge mass
+1 D 1 VST A 1  1.0 24.0
+2 D 1 VST V 2 -1.0  0.0
+
+[ virtual_sitesn ]
+; site funct constructing atom indices
+2 1 1
+
+[ system ]
+one-parent vsite system
+
+[ molecules ]
+VST 1
+"""
+
+
+def make_topology(tmpdir, epsilon_r=4.0, topology_text=TOPOLOGY):
     path = Path(tmpdir) / "system.top"
-    path.write_text(TOPOLOGY)
+    path.write_text(topology_text)
     box = (
         mm.Vec3(2.0, 0.0, 0.0) * unit.nanometer,
         mm.Vec3(0.0, 2.0, 0.0) * unit.nanometer,
@@ -113,6 +141,30 @@ class TestElectrostaticsMethods(unittest.TestCase):
             self.assertTrue(
                 any(isinstance(force, mm.NonbondedForce) for force in system.getForces())
             )
+
+    def test_one_parent_vsite_exclusion_is_mirrored_to_pme(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            top = make_topology(tmpdir, topology_text=ONE_PARENT_VSITE_TOPOLOGY)
+            system = top.create_system(electrostatics_method="pme")
+
+        nonbonded_forces = [
+            force for force in system.getForces() if isinstance(force, mm.NonbondedForce)
+        ]
+        self.assertEqual(len(nonbonded_forces), 1)
+
+        pme_force = nonbonded_forces[0]
+        exception_pairs = set()
+        charge_products = {}
+        for index in range(pme_force.getNumExceptions()):
+            i, j, charge_product, _, _ = pme_force.getExceptionParameters(index)
+            pair = tuple(sorted((i, j)))
+            exception_pairs.add(pair)
+            charge_products[pair] = charge_product.value_in_unit(
+                unit.elementary_charge**2
+            )
+
+        self.assertIn((0, 1), exception_pairs)
+        self.assertAlmostEqual(charge_products[(0, 1)], 0.0)
 
 
 if __name__ == "__main__":
