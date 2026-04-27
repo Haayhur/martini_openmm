@@ -64,6 +64,37 @@ VST 1
 """
 
 
+ONE_PARENT_VSITE_WITH_EXCLUSION_TOPOLOGY = """[ defaults ]
+1 1
+
+[ atomtypes ]
+; name mass charge ptype c6 c12
+D 24.0 0.000 A 0.0 0.0
+
+[ moleculetype ]
+; molname nrexcl
+VST 1
+
+[ atoms ]
+; nr type resnr residue atom cgnr charge mass
+1 D 1 VST A 1  1.0 24.0
+2 D 1 VST V 2 -1.0  0.0
+
+[ exclusions ]
+1 2
+
+[ virtual_sitesn ]
+; site funct constructing atom indices
+2 1 1
+
+[ system ]
+one-parent vsite system
+
+[ molecules ]
+VST 1
+"""
+
+
 def make_topology(tmpdir, epsilon_r=4.0, topology_text=TOPOLOGY):
     path = Path(tmpdir) / "system.top"
     path.write_text(topology_text)
@@ -165,6 +196,21 @@ class TestElectrostaticsMethods(unittest.TestCase):
 
         self.assertIn((0, 1), exception_pairs)
         self.assertAlmostEqual(charge_products[(0, 1)], 0.0)
+
+    def test_explicit_one_parent_vsite_exclusion_is_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            top = make_topology(
+                tmpdir, topology_text=ONE_PARENT_VSITE_WITH_EXCLUSION_TOPOLOGY
+            )
+            system = top.create_system(electrostatics_method="pme")
+
+        custom_nonbonded_forces = [
+            force
+            for force in system.getForces()
+            if isinstance(force, mm.CustomNonbondedForce)
+        ]
+        self.assertEqual(len(custom_nonbonded_forces), 1)
+        self.assertEqual(custom_nonbonded_forces[0].getNumExclusions(), 1)
 
 
 if __name__ == "__main__":

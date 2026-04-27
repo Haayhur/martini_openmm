@@ -189,6 +189,7 @@ class MartiniTopFile(object):
         self._nonbond_types = {}
         self._all_vsites = []
         self._direct_nb_exclusions = []
+        self._nb_exclusion_pairs = set()
         self.nb_force = None
         self.es_force = None
         self.es_self_excl_force = None
@@ -1241,6 +1242,13 @@ class MartiniTopFile(object):
                 raise RuntimeError(f"Unknown site type {type(site)}.")
             self._all_vsites.append(index + offset)
 
+    def _add_nb_exclusion(self, i, j):
+        pair = tuple(sorted((i, j)))
+        if pair not in self._nb_exclusion_pairs:
+            self.nb_force.addExclusion(*pair)
+            self._nb_exclusion_pairs.add(pair)
+        return pair
+
     def _add_normalized_in_plane_two_particle_vsite(self, sys, index, site, offset):
         vsite = mm.LocalCoordinatesSite(
             site.atom1 + offset,
@@ -1313,8 +1321,7 @@ class MartiniTopFile(object):
         # Add exclusions
         i = index + offset
         j = atoms[0]
-        self.nb_force.addExclusion(i, j)
-        self._direct_nb_exclusions.append(tuple(sorted((i, j))))
+        self._direct_nb_exclusions.append(self._add_nb_exclusion(i, j))
 
     def _add_two_particle_vsite(self, sys, index, site, offset):
         atoms = []
@@ -1390,6 +1397,7 @@ class MartiniTopFile(object):
         """
         sys = mm.System()
         self._direct_nb_exclusions = []
+        self._nb_exclusion_pairs = set()
         box_vectors = self.topology.getPeriodicBoxVectors()
         if box_vectors is not None:
             sys.setDefaultPeriodicBoxVectors(*box_vectors)
@@ -1614,7 +1622,7 @@ class MartiniTopFile(object):
             # add in all of the exclusions
             for i, j in except_map:
                 # Remove i,j from nonbonded interactions for all exceptions / exclusions
-                self.nb_force.addExclusion(i, j)
+                self._add_nb_exclusion(i, j)
             
                 # Handle electrostatic exceptions / exclusions.
                 # We're going to assume that q==0 means that this was an
